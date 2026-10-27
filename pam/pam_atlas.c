@@ -11,6 +11,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -197,7 +198,12 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
   posix_spawn_file_actions_adddup2(&fa, from[1], 1);
   posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
   char *args[] = {(char *)helper, (char *)"serve", NULL};
-  char *env[] = {(char *)"PATH=/usr/bin:/bin:/usr/sbin:/sbin", NULL};
+  char *env[3] = {(char *)"PATH=/usr/bin:/bin:/usr/sbin:/sbin", NULL, NULL};
+#ifdef ATLAS_PAM_TESTING
+  /* The fake helper picks its scenario from the environment; the real helper gets nothing but PATH. */
+  char scenario[64];
+  if (getenv("ATLAS_FAKE")) { snprintf(scenario, sizeof scenario, "ATLAS_FAKE=%s", getenv("ATLAS_FAKE")); env[1] = scenario; }
+#endif
   pid_t pid = 0;
   int rc = posix_spawn(&pid, helper, &fa, &at, args, env);
   posix_spawn_file_actions_destroy(&fa);
