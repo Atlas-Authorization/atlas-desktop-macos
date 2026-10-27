@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>net.atlasauth.desktop.sync</string>
+	<key>ProgramArguments</key>
+	<array><string>/usr/local/libexec/atlas/atlas-sync</string></array>
+	<key>RunAtLoad</key><true/>
+	<key>StartInterval</key><integer>3600</integer>
+	<key>WatchPaths</key>
+	<array><string>/Library/Preferences/SystemConfiguration/NetworkInterfaces.plist</string></array>
+	<key>ThrottleInterval</key><integer>60</integer>
+	<key>UserName</key><string>root</string>
+	<key>StandardErrorPath</key><string>/var/log/atlas-sync.log</string>
+</dict>
+</plist>
