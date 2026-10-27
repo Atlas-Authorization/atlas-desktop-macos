@@ -92,8 +92,13 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/atlas-signing.keychain-db" || true
           rm -f "$RUNNER_TEMP/notary.p8"
 
+      - name: Release notes
+        run: |
+          if [ "$HAVE_SECRETS" = true ]; then echo "Signed and notarised installer." > dist/RELEASE_NOTES.txt
+          else echo "UNSIGNED build: no signing secrets were configured. Not for production machines." > dist/RELEASE_NOTES.txt; fi
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.pkg
-          body: ${{ env.HAVE_SECRETS == 'true' && 'Signed and notarised installer.' || 'UNSIGNED build: no signing secrets were configured. Not for production machines.' }}
+          body_path: dist/RELEASE_NOTES.txt
