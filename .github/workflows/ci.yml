@@ -1,7 +1,7 @@
 name: ci
 on:
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
     tags: ["v*"]
   pull_request:
 
@@ -18,8 +18,24 @@ jobs:
         run: swift test
       - name: Lint scripts and plists
         run: |
-          for f in scripts/*.sh; do bash -n "$f"; done
-          plutil -lint Plugin/Info.plist launchd/*.plist
+          for f in scripts/*.sh pam/tests/*.sh; do bash -n "$f"; done
+          plutil -lint Plugin/Info.plist launchd/*.plist PlatformSSO/*.plist PlatformSSO/*.in
+      - name: PAM module (build, unit tests)
+        run: |
+          make -C pam
+          make -C pam test
+          lipo -info pam/build/pam_atlas.so
+      - name: PAM install and uninstall scripts (staged filesystem)
+        run: bash pam/tests/install_test.sh
+      - name: PAM integration test (real PAM stack, test build, fake helper)
+        run: sudo make -C pam itest
+      - name: Passkey helper app (unsigned build, entitlement plumbing only)
+        run: bash scripts/build-passkey-helper.sh --domain auth.example.com --out "$RUNNER_TEMP/passkey"
+      - name: Platform SSO app and extension (unsigned; proves it builds as an app extension)
+        run: |
+          bash scripts/build-platform-sso.sh --out "$RUNNER_TEMP/psso"
+          test -x "$RUNNER_TEMP/psso/AtlasPlatformSSO.app/Contents/PlugIns/AtlasPlatformSSO.appex/Contents/MacOS/atlas-platform-sso"
+          plutil -extract NSExtension.NSExtensionPointIdentifier raw "$RUNNER_TEMP/psso/AtlasPlatformSSO.app/Contents/PlugIns/AtlasPlatformSSO.appex/Contents/Info.plist" | grep -qx com.apple.AppSSO.idp-extension
       - name: Build plugin (unsigned)
         run: bash scripts/build-plugin.sh
       - name: Build pkg (unsigned)
