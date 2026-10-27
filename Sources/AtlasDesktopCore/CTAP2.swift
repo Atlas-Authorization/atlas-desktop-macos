@@ -154,7 +154,7 @@ final class CTAP2Client {
     }
 
     func retries() -> Int? {
-        guard let r = try? command(CTAP2.cmdClientPIN, .map([(.int(2), .int(1))]), timeout: 5), let n = r?[3]?.intValue else { return nil }
+        guard let r = try? command(CTAP2.cmdClientPIN, .map([(.int(2), .int(1))]), timeout: 5), let n = r[3]?.intValue else { return nil }
         return Int(n)
     }
 
