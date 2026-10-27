@@ -1,0 +1,86 @@
+{
+  "description": "Reference output of the Atlas server protocol. Agents must open `sealed` with `device_private_jwk`, check `mac`, verify `pin`, and produce the same `totp` codes and signed-message bytes.",
+  "device_public_jwk": {
+    "kty": "EC",
+    "x": "Yb-MO8juBKX5Avnzv-Iy-9LuJZwP1VvlL09vChVz_y0",
+    "y": "VdFaxHvwVHLC2n9D2bOqS7G3ighmx8nMy1ojzKW1n8Q",
+    "crv": "P-256"
+  },
+  "device_private_jwk": {
+    "kty": "EC",
+    "x": "Yb-MO8juBKX5Avnzv-Iy-9LuJZwP1VvlL09vChVz_y0",
+    "y": "VdFaxHvwVHLC2n9D2bOqS7G3ighmx8nMy1ojzKW1n8Q",
+    "crv": "P-256",
+    "d": "6QqlXeSS0Lw2UzAkImPJOnjjOuxvtcA0nAlCqF5QDVk"
+  },
+  "mac_key_b64u": "2iy_hKMhN-s7G5VysHkdJOKrhtfSLFg6z-rFJdM4Vao",
+  "bundle": {
+    "device_id": "ddv_TESTVECTOR",
+    "bundle_id": "ddb_TESTVECTOR",
+    "generation": 2,
+    "expires_at": 1800259200000,
+    "sealed": "AQQmXuzirZ9ezY4wbRVY1Fi8DrV5Zijywr5OWbtO3fjxMlES5SjnCm_0lkOCYVws7p_YqLmks12diSKoWpegJpaGEsO9tMc5gUzRqqp11QqnMEQdtyYrDMSM1psfaG2nA2K8zXpUHrPIlNx6sZkL8G6ER_faoIeL_FWasoqwj9AePpYbScRrCbyv_b3BF7sf5ayqgUHgZ7c7bdvdMmcEM7uJeEL0ClMJoxe8_mRyi_cKiNzqDebIzpxRWxjdB4Gv_8snQjYYf8lhS-iZIVkaw_81adnoflOsiUnNZafJqjgfcjereOSpvSYdflCqIxy5gy1ajpAuE0PSfVmBdHTXu7Zk-d-Q0Xzok6UFNeintAbjpsnj_lpVz9kYCUReS4u3F67iiPow0_TR5xjYAlzGBOyk7YOn6TTrYlRKmLytwmJXbXlZLKv3JQv9H1Gg8j40UUgETyAx8sD8H4yLcH5fU9W7j0MsB6EDt2CkfW-hHXgBpmzjQ3pyoxP0WeRRa_H1ThdEiHMhGIR6szsrdnmQZVAE_EplgUmlPZzo-PmNmwu392yOLmHEl49chw1k6CtzMwmgNg7NuDSHFtvCX-Fotuu3h6_9sP32B9Msc8iuQpeOjoxBC24zxpZxpbLa2wAtm2zBaOSvIwmB8vJiPmyeqiBuVA",
+    "mac": "lzHza3SJrZYh3lMkwJu7fZp2eKKzeTTtNeXRC3UdZso",
+    "plaintext": {
+      "v": 1,
+      "bundle_id": "ddb_TESTVECTOR",
+      "device_id": "ddv_TESTVECTOR",
+      "user_id": "usr_TESTVECTOR",
+      "generation": 2,
+      "issued_at": 1800000000000,
+      "expires_at": 1800259200000,
+      "pin_required": true,
+      "pin": {
+        "alg": "scrypt",
+        "N": 16384,
+        "r": 8,
+        "p": 1,
+        "salt": "8UsIQ6L1Jck7SpfD1KMNxg",
+        "hash": "1O0_ILwnyHvq-6m-7k57bCZYddKChna6rv2LYLKAIRU"
+      },
+      "totp": {
+        "secret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+        "digits": 6,
+        "period": 30,
+        "algorithm": "SHA1"
+      }
+    }
+  },
+  "pin": {
+    "value": "24681357",
+    "verifier": {
+      "alg": "scrypt",
+      "N": 16384,
+      "r": 8,
+      "p": 1,
+      "salt": "8UsIQ6L1Jck7SpfD1KMNxg",
+      "hash": "1O0_ILwnyHvq-6m-7k57bCZYddKChna6rv2LYLKAIRU"
+    },
+    "wrong": "00000000"
+  },
+  "totp": {
+    "secret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+    "times": [
+      {
+        "unix": 59,
+        "code": "503347"
+      },
+      {
+        "unix": 1111111109,
+        "code": "088309"
+      },
+      {
+        "unix": 1800000000,
+        "code": "877905"
+      }
+    ]
+  },
+  "signed_message": {
+    "purpose": "sync",
+    "instance_id": "ins_TESTVECTOR",
+    "key_id": "dvk_TESTVECTOR",
+    "nonce": "nonce-TESTVECTOR",
+    "message": "atlas-desktop:v1:sync:ins_TESTVECTOR:dvk_TESTVECTOR:nonce-TESTVECTOR",
+    "signature_p1363_b64u": "ZbqblpD0FHvqH9PA4wmDZpCyCsiPl2RKRTsFdQpzJQHBwKe7aDHmMwFBYfacQ_Xtwh_GmeJ9KVsjKleUBRhNDA"
+  }
+}
