@@ -27,7 +27,7 @@ offline bundle and unlock state in the System keychain, the device key in the Se
 
 ```sh
 swift build
-swift test            # 33 tests; scrypt N=16384 needs optimisation, Package.swift keeps -O in debug
+swift test            # 36 tests; scrypt N=16384 needs optimisation, Package.swift keeps -O in debug
 bash scripts/build-plugin.sh    # -> build/AtlasMFA.bundle (arm64 + x86_64) and build/bin/atlas-{sync,enroll}
 bash scripts/build-pkg.sh       # -> dist/AtlasDesktopMFA-<version>-unsigned.pkg
 ```
@@ -54,20 +54,61 @@ ATLAS_NOTARY_KEY_ID=... ATLAS_NOTARY_ISSUER=... ATLAS_NOTARY_KEY_PATH=AuthKey.p8
 
 Test on a spare machine or VM with SSH enabled and a second admin account before rolling out.
 
-## Recovery
+## Break-glass account
 
-If the login window misbehaves, from SSH or another admin session:
+Before rolling out, create a dedicated local admin (for example `atlas-breakglass`), give it a long random password,
+and vault that password offline. Put the account name in `config.json`:
 
-```sh
-sudo scripts/uninstall.sh            # restores the backed-up rules, removes bundle, helpers, LaunchDaemon
-# by hand:
-sudo security authorizationdb write system.login.console < "/Library/Application Support/Atlas/backup/system.login.console.original.plist"
-sudo rm -rf /Library/Security/SecurityAgentPlugins/AtlasMFA.bundle
-sudo security authorizationdb remove system.login.console   # last resort: back to the system default rule
+```json
+"break_glass_accounts": ["atlas-breakglass"]
 ```
 
-From Recovery mode Terminal, mount and unlock the data volume and delete
-`<volume>/Library/Security/SecurityAgentPlugins/AtlasMFA.bundle` (authorizationdb itself needs a running system, so restore the rule after booting).
+For listed accounts only, the plugin skips Atlas (no push, no code). Their password is still verified first, every use
+is written to the unified log (`log show --predicate 'subsystem == "net.atlasauth.desktop"'`, "break-glass login") and a
+`break_glass:<account>` event is queued and reported on the next sync. The list is empty by default. Treat any use as an incident.
+
+## Wrong passwords never reach Atlas
+
+The mechanism sits after `builtin:authenticate` but does not trust that: the password from the authorization context is
+re-verified against OpenDirectory (`ODRecord verifyPassword`) before any Atlas call. If the password is absent (for example
+smart-card or auto-login) or wrong, the login is denied and no network request is made (`LoginGate.begin(passwordVerified:)`,
+covered by a test). C buffers holding the password are wiped; the brief Swift `String` copy cannot be.
+
+## Installer safety
+
+`install.sh` refuses unless the rule has the expected shape: `loginwindow:login` < `builtin:login-begin` < `builtin:authenticate*` <
+`AtlasMFA:check`, which must come before `builtin:login-success`, `loginwindow:success`, HomeDir/MCX/CryptoTokenKit mechanisms and
+`loginwindow:done`, with no credential mechanism after it. The same check runs on the edited plist before writing and on the rule read back
+after writing; if the read-back fails the saved original is written back. Nothing in the login rule other than `builtin:auto-login` /
+`forward-login` (which precede authentication and are denied by the password re-check) can start a session without passing the mechanism.
+Not covered: sessions that do not use the login window rule (SSH, `su`, Screen Sharing/Remote Management login, FileVault pre-boot unlock).
+
+## Offline behaviour
+
+Not-enrolled accounts pass through. For an enrolled account the gate fails closed: if there is neither a cached `required` state
+nor, when `required` is true, a valid unexpired offline bundle, login is refused. A Mac that has never synced is refused for enrolled
+accounts unless `fail_open_when_never_synced` is set. Plan for this with the break-glass account and a long offline grace period.
+
+## Recovery
+
+We have **not** verified what macOS does when the rule lists a mechanism whose bundle is missing; assume it fails closed
+(you stay at the login window). So removing the bundle alone is not a guaranteed fix; restore the rule too.
+
+1. SSH (enable Remote Login beforehand) or another admin session, or the break-glass account at the console:
+
+   ```sh
+   sudo scripts/uninstall.sh      # restores the saved original rules, removes bundle, helpers, LaunchDaemon
+   # by hand:
+   sudo security authorizationdb write system.login.console < "/Library/Application Support/Atlas/backup/system.login.console.original.plist"
+   sudo rm -rf /Library/Security/SecurityAgentPlugins/AtlasMFA.bundle
+   sudo security authorizationdb remove system.login.console   # last resort: OS default rule
+   ```
+
+2. Recovery mode (Apple silicon: hold the power button, Options; Intel: Cmd-R), then Terminal. Unlock and mount the Data volume
+   and run `uninstall.sh --data-volume "/Volumes/Macintosh HD - Data"`. This only removes files (bundle, LaunchDaemon, helpers);
+   it cannot edit the authorization database, so if the login window still fails, restore the rule over SSH after boot.
+   Replacing `/var/db/auth.db` on the Data volume with a pre-install copy is a possible, unverified alternative.
+3. Apple silicon has no single-user mode. On Intel, target disk mode from another Mac gives file-level access like (2).
 
 ## Behaviour and security notes
 

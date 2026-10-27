@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Cached sync result: lets an offline workstation know whether MFA was required.
 struct GateState: Codable, Equatable {
@@ -90,7 +91,15 @@ public final class LoginGate {
     static let supported = ["push", "totp", "passkey"]
 
     /// Decides from a fresh sync when reachable, else from cached state. Defaults to deny.
-    public func begin(user: String) async -> GateDecision {
+    /// `passwordVerified` must be true only when the account password was verified by the caller (OpenDirectory) in this
+    /// login attempt. When false the gate denies immediately and makes no network call, so a wrong password never sends a push.
+    public func begin(user: String, passwordVerified: Bool) async -> GateDecision {
+        guard passwordVerified else { return .deny("password not verified") }
+        if config.breakGlassAccounts?.contains(user) == true {
+            Logger(subsystem: "net.atlasauth.desktop", category: "gate").notice("break-glass login for account \(user, privacy: .public): Atlas MFA skipped")
+            OfflineUnlock(store: secrets, clock: clock).record(clock.nowMs, "success", nil, "break_glass:" + user)
+            return .allow("break-glass account")
+        }
         guard config.appliesTo(user: user) else { return .allow("account not enrolled") }
         guard config.enrolled, !config.deviceId.isEmpty else {
             return config.failOpenWhenNeverSynced == true ? .allow("not enrolled, fail-open configured") : .deny("device not enrolled")

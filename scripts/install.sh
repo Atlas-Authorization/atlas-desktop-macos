@@ -38,6 +38,37 @@ edit_rule() { # $1=in.plist $2=out.plist ; exit 0 changed, 10 already present, 1
   [ "$(plutil -extract "mechanisms.$((idx + 1))" raw -o - "$out")" = "$MECH" ] || { echo "verification failed" >&2; return 1; }
 }
 
+
+# Refuses unrecognised layouts. $1=rule name $2=plist. Asserts MECH appears once, after the last builtin:authenticate*,
+# and (for the login rule) before every mechanism that starts the session, with the expected skeleton present.
+check_layout() {
+  local rule="$1" f="$2" n i m cnt=0 mi=-1 ai=-1 li=-1 bi=-1 si=999999 di=-1 first_start=999999
+  n=$(plutil -extract mechanisms raw -o - "$f" 2>/dev/null) || { echo "$rule: no mechanisms array" >&2; return 1; }
+  for ((i = 0; i < n; i++)); do
+    m=$(plutil -extract "mechanisms.$i" raw -o - "$f")
+    case "$m" in
+      "$MECH") cnt=$((cnt + 1)); mi=$i;;
+      builtin:authenticate*) ai=$i;;
+      loginwindow:login) li=$i;;
+      builtin:login-begin) bi=$i;;
+      loginwindow:done) di=$i;;
+      builtin:login-success|loginwindow:success|HomeDirMechanism:*|MCXMechanism:*|CryptoTokenKit:login) [ $i -lt $first_start ] && first_start=$i;;
+    esac
+  done
+  [ $cnt = 1 ] || { echo "$rule: $MECH present $cnt times (want 1)" >&2; return 1; }
+  [ $ai -ge 0 ] && [ $mi -gt $ai ] || { echo "$rule: $MECH is not after builtin:authenticate" >&2; return 1; }
+  if [ "$rule" = system.login.console ]; then
+    [ $li -ge 0 ] && [ $bi -gt $li ] && [ $ai -gt $bi ] || { echo "$rule: unrecognised skeleton (loginwindow:login < builtin:login-begin < builtin:authenticate required)" >&2; return 1; }
+    [ $first_start != 999999 ] && [ $mi -lt $first_start ] || { echo "$rule: $MECH is not before the session-start mechanisms (login-success, HomeDir, MCX...)" >&2; return 1; }
+    [ $di -gt $mi ] || { echo "$rule: loginwindow:done missing or before $MECH" >&2; return 1; }
+    # Anything between login-begin and the authenticate mechanism that could grant a session on its own must not follow us.
+    for ((i = mi + 1; i < n; i++)); do
+      m=$(plutil -extract "mechanisms.$i" raw -o - "$f")
+      case "$m" in builtin:auto-login*|builtin:forward-login*|builtin:authenticate*|builtin:reset-password*) echo "$rule: credential mechanism $m follows $MECH" >&2; return 1;; esac
+    done
+  fi
+}
+
 # Rules are read into temp files; nothing is written until every edit verified.
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 changed=()
@@ -45,7 +76,7 @@ for r in "${RULES[@]}"; do
   security authorizationdb read "$r" > "$TMP/$r.in.plist" 2>/dev/null || { echo "cannot read rule $r" >&2; exit 1; }
   plutil -lint "$TMP/$r.in.plist" >/dev/null
   rc=0; edit_rule "$TMP/$r.in.plist" "$TMP/$r.out.plist" || rc=$?
-  case $rc in 0) changed+=("$r");; 10) echo "$r: already contains $MECH";; *) exit 1;; esac
+  case $rc in 0) check_layout "$r" "$TMP/$r.out.plist" || exit 1; changed+=("$r");; 10) check_layout "$r" "$TMP/$r.in.plist" || exit 1; echo "$r: already contains $MECH";; *) exit 1;; esac
 done
 [ $DRY = 1 ] && for r in "${changed[@]}"; do echo "[dry-run] $r would become:"; plutil -p "$TMP/$r.out.plist" | grep -A30 mechanisms | head -30; done
 
@@ -70,6 +101,16 @@ for r in "${changed[@]}"; do
   bk="$SUPPORT/backup/$r.original.plist"
   [ -f "$bk" ] || run cp "$TMP/$r.in.plist" "$bk"   # keep the FIRST original; reruns never overwrite it
   if [ $DRY = 1 ]; then echo "[dry-run] security authorizationdb write $r < edited plist"
-  else security authorizationdb write "$r" < "$TMP/$r.out.plist" && echo "$r: inserted $MECH"; fi
+  else
+    security authorizationdb write "$r" < "$TMP/$r.out.plist"
+    # read back and verify what macOS actually stored; undo from the saved original if it is not as expected
+    if security authorizationdb read "$r" > "$TMP/$r.back.plist" 2>/dev/null && check_layout "$r" "$TMP/$r.back.plist"; then
+      echo "$r: inserted and verified $MECH"
+    else
+      echo "$r: read-back verification FAILED, restoring original" >&2
+      security authorizationdb write "$r" < "$bk" || echo "RESTORE FAILED: run uninstall.sh / see README Recovery" >&2
+      exit 1
+    fi
+  fi
 done
 echo "done. Backups: $SUPPORT/backup. To undo: sudo $ROOT/scripts/uninstall.sh"

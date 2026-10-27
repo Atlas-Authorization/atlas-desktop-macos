@@ -1,4 +1,6 @@
 import AppKit
+import OpenDirectory
+import os
 
 /// Small login-window panel: status, number match, code and PIN fields, factor buttons.
 final class MFAPanel: NSObject {
@@ -66,6 +68,7 @@ final class MFASession {
     let panel = MFAPanel()
     let user: String
     let done: (Bool) -> Void
+    var passwordVerified = false
     var gate: LoginGate?
     var prompt: GatePrompt?
     var pushTask: Task<Void, Never>?
@@ -81,11 +84,13 @@ final class MFASession {
         done(allow)
     }
 
-    func start() {
+    func start(passwordVerified: Bool) {
+        self.passwordVerified = passwordVerified
         panel.onCancel = { [weak self] in self?.finish(false) }
         panel.present()
         Task { @MainActor in
             let store = KeychainSecretStore()
+            guard passwordVerified else { return self.denyLater("Sign-in blocked: password not verified") }
             guard let cfg = try? AgentConfig.load() else { return self.denyLater("Atlas is not configured. Contact your administrator.") }
             guard let key = DeviceKeyFactory.open(label: cfg.deviceKeyId, secrets: store, create: false) else {
                 if !cfg.appliesTo(user: user) { return self.finish(true) }
@@ -93,7 +98,7 @@ final class MFASession {
             }
             let g = LoginGate(config: cfg, key: key, http: URLSessionHTTPClient(), secrets: store)
             self.gate = g
-            switch await g.begin(user: self.user) {
+            switch await g.begin(user: self.user, passwordVerified: self.passwordVerified) {
             case .allow: self.finish(true)
             case .deny(let why): self.denyLater("Sign-in blocked: \(why)")
             case .challenge(let p): self.wire(p)
@@ -161,16 +166,37 @@ final class MFASession {
 
 var activeSessions: [UnsafeMutableRawPointer: MFASession] = [:]
 
+/// Verifies the account password with OpenDirectory (authentication search path: local + directory accounts).
+/// Returns false on any error, an empty password, or a missing account. shortcut: the password is briefly a Swift String
+/// (ODRecord.verifyPassword takes one) that cannot be zeroed; the C buffers are wiped.
+func verifyPassword(user: String, password: String) -> Bool {
+    guard !password.isEmpty else { return false }
+    do {
+        let node = try ODNode(session: ODSession.default(), type: ODNodeType(kODNodeTypeAuthentication))
+        let rec = try node.record(withRecordType: kODRecordTypeUsers, name: user, attributes: nil)
+        try rec.verifyPassword(password)
+        return true
+    } catch { return false }
+}
+
 @_cdecl("atlas_mfa_run")
-public func atlas_mfa_run(_ user: UnsafePointer<CChar>, _ ctx: UnsafeMutableRawPointer,
-                          _ done: @convention(c) (UnsafeMutableRawPointer?, Int32) -> Void) {
+public func atlas_mfa_run(_ user: UnsafePointer<CChar>, _ password: UnsafePointer<CChar>?, _ passwordLen: Int32,
+                          _ ctx: UnsafeMutableRawPointer, _ done: @convention(c) (UnsafeMutableRawPointer?, Int32) -> Void) {
     let name = String(cString: user)
-    DispatchQueue.main.async {
-        let s = MFASession(user: name) { allow in
-            activeSessions[ctx] = nil
-            done(ctx, allow ? 1 : 0)
+    var pw: [UInt8] = password.map { Array(UnsafeBufferPointer(start: UnsafeRawPointer($0).assumingMemoryBound(to: UInt8.self), count: Int(passwordLen))) } ?? []
+    DispatchQueue.global().async {
+        var verified = false
+        if !pw.isEmpty, let str = String(bytes: pw, encoding: .utf8) { verified = verifyPassword(user: name, password: str) }
+        pw.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
+        pw.removeAll()
+        if !verified { Logger(subsystem: "net.atlasauth.desktop", category: "plugin").notice("password not verified by OpenDirectory; Atlas not contacted") }
+        DispatchQueue.main.async {
+            let s = MFASession(user: name) { allow in
+                activeSessions[ctx] = nil
+                done(ctx, allow ? 1 : 0)
+            }
+            activeSessions[ctx] = s
+            s.start(passwordVerified: verified)
         }
-        activeSessions[ctx] = s
-        s.start()
     }
 }

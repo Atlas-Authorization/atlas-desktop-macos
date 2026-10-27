@@ -4,7 +4,7 @@
 #import <Security/AuthorizationTags.h>
 #import <os/log.h>
 
-extern void atlas_mfa_run(const char *user, void *ctx, void (*done)(void *ctx, int allow));
+extern void atlas_mfa_run(const char *user, const char *password, int passwordLen, void *ctx, void (*done)(void *ctx, int allow));
 
 typedef struct {
     const AuthorizationCallbacks *callbacks;
@@ -49,7 +49,17 @@ static OSStatus MechanismInvoke(AuthorizationMechanismRef mechanism) {
     char user[256];
     memcpy(user, value->data, value->length);
     user[value->length] = 0;
-    atlas_mfa_run(user, m, atlas_done);
+    // The password in the context is NOT proof of authentication; Swift verifies it with OpenDirectory before any Atlas call.
+    char *pw = NULL; int pwLen = 0;
+    const AuthorizationValue *pv = NULL;
+    if (cb->GetContextValue(m->engine, kAuthorizationEnvironmentPassword, &flags, &pv) == noErr
+        && pv != NULL && pv->data != NULL && pv->length > 0 && pv->length <= 1024) {
+        pw = malloc(pv->length + 1);
+        if (pw) { memcpy(pw, pv->data, pv->length); pw[pv->length] = 0; pwLen = (int)pv->length; }
+    }
+    atlas_mfa_run(user, pw, pwLen, m, atlas_done);   // Swift copies what it needs; we wipe ours
+    if (pw) { memset_s(pw, pwLen + 1, 0, pwLen + 1); free(pw); }
+    memset_s(user, sizeof(user), 0, sizeof(user));
     return noErr;
 }
 

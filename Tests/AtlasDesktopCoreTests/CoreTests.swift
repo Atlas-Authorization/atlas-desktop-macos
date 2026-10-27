@@ -218,6 +218,37 @@ final class ProtocolClientTests: XCTestCase {
 }
 
 final class LoginGateTests: XCTestCase {
+    func testUnverifiedPasswordMakesNoNetworkCall() async throws {
+        let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: true))
+        let store = InMemorySecretStore()
+        let d = await gate(v, http, store).begin(user: "alice", passwordVerified: false)
+        XCTAssertEqual(d, .deny("password not verified"))
+        XCTAssertTrue(http.calls.isEmpty)
+        // also for a break-glass or not-enrolled account: unverified is always a deny
+        var cfg = testConfig(); cfg.breakGlassAccounts = ["root2"]; cfg.enrolledUsers = ["alice"]
+        let g = gate(v, http, store, cfg: cfg)
+        let a = await g.begin(user: "root2", passwordVerified: false), b = await g.begin(user: "bob", passwordVerified: false)
+        XCTAssertEqual(a, .deny("password not verified")); XCTAssertEqual(b, .deny("password not verified"))
+        XCTAssertTrue(http.calls.isEmpty)
+    }
+
+    func testBreakGlassSkipsOnlyListedAccountsAndQueuesEvent() async throws {
+        let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: true))
+        var cfg = testConfig(); cfg.breakGlassAccounts = ["breakglass"]
+        let store = InMemorySecretStore()
+        let g = gate(v, http, store, cfg: cfg)
+        let d = await g.begin(user: "breakglass", passwordVerified: true)
+        XCTAssertEqual(d, .allow("break-glass account")); XCTAssertTrue(http.calls.isEmpty)
+        let q = OfflineUnlock(store: store, clock: TestClock(0)).queue
+        XCTAssertEqual(q.last?.reason, "break_glass:breakglass")
+        guard case .challenge = await g.begin(user: "alice", passwordVerified: true) else { return XCTFail("other accounts stay gated") }
+    }
+
+    func testBreakGlassConfigParses() throws {
+        let j = #"{"instance_url":"https://a.com","publishable_key":"pk","instance_id":"i","device_id":"","device_key_id":"","enrolled":false,"break_glass_accounts":["bg"]}"#
+        XCTAssertEqual(try AgentConfig.parse(Data(j.utf8)).breakGlassAccounts, ["bg"])
+    }
+
     func gate(_ v: Vectors, _ http: MockHTTP, _ store: SecretStore, clock: Clock = TestClock(1_800_000_000_000), cfg: AgentConfig? = nil,
               passkey: PasskeyProvider? = nil) -> LoginGate {
         try? store.set(StateSync.macKeyName, Data(v.macKey.b64u.utf8))
@@ -227,13 +258,13 @@ final class LoginGateTests: XCTestCase {
 
     func testNotRequiredAllows() async throws {
         let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: false))
-        let d = await gate(v, http, InMemorySecretStore()).begin(user: "alice")
+        let d = await gate(v, http, InMemorySecretStore()).begin(user: "alice", passwordVerified: true)
         XCTAssertEqual(d, .allow("MFA not required"))
     }
 
     func testOtherAccountNotEnrolledAllows() async throws {
         let v = try Vectors.load(); var cfg = testConfig(); cfg.enrolledUsers = ["alice"]
-        let d = await gate(v, MockHTTP(), InMemorySecretStore(), cfg: cfg).begin(user: "bob")
+        let d = await gate(v, MockHTTP(), InMemorySecretStore(), cfg: cfg).begin(user: "bob", passwordVerified: true)
         XCTAssertEqual(d, .allow("account not enrolled"))
     }
 
@@ -241,7 +272,7 @@ final class LoginGateTests: XCTestCase {
         let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: true))
         http.routes["challenges"] = (201, ["id": "c1", "factor": "push", "expires_at": 1, "number_match": "42"])
         let g = gate(v, http, InMemorySecretStore())
-        guard case .challenge(let p) = await g.begin(user: "alice") else { return XCTFail() }
+        guard case .challenge(let p) = await g.begin(user: "alice", passwordVerified: true) else { return XCTFail() }
         XCTAssertTrue(p.online); XCTAssertEqual(p.factors, ["push", "totp"])
         http.routes["challenges/c1/verify"] = (200, ["status": "pending"])
         var shown: String?
@@ -256,7 +287,7 @@ final class LoginGateTests: XCTestCase {
         let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: true))
         http.routes["challenges"] = (201, ["id": "c1", "factor": "push", "number_match": "7"])
         http.routes["challenges/c1/verify"] = (200, ["status": "failed"])
-        let g = gate(v, http, InMemorySecretStore()); _ = await g.begin(user: "a")
+        let g = gate(v, http, InMemorySecretStore()); _ = await g.begin(user: "a", passwordVerified: true)
         let out = await g.runPush(onNumber: { _ in }); XCTAssertEqual(out, .rejected("denied on phone"))
         http.routes["challenges/c1/verify"] = (422, ["errors": [["code": "invalid_code"]]])
         let r1 = await g.verifyCode("123456"); XCTAssertEqual(r1, .retry("incorrect code"))
@@ -269,10 +300,10 @@ final class LoginGateTests: XCTestCase {
         let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: true, factors: ["passkey"]))
         http.routes["challenges"] = (201, ["id": "c1", "factor": "passkey", "passkey_options": ["challenge": "x"]])
         http.routes["challenges/c1/verify"] = (200, ["status": "verified"])
-        let g1 = gate(v, http, InMemorySecretStore()); _ = await g1.begin(user: "a")
+        let g1 = gate(v, http, InMemorySecretStore()); _ = await g1.begin(user: "a", passwordVerified: true)
         let u = await g1.runPasskey(); XCTAssertEqual(u, .unsupported)
         let g2 = gate(v, http, InMemorySecretStore(), passkey: { _ in ["challenge": "x", "credential_id": "c", "authenticator_data": "a", "client_data_json": "j", "signature": "s"] })
-        _ = await g2.begin(user: "a")
+        _ = await g2.begin(user: "a", passwordVerified: true)
         let ok = await g2.runPasskey(); XCTAssertEqual(ok, .allowed)
         XCTAssertNotNil((http.calls.last!.body["assertion"] as? [String: String])?["credential_id"])
     }
@@ -281,41 +312,41 @@ final class LoginGateTests: XCTestCase {
         let v = try Vectors.load(); let http = MockHTTP(); http.routes["nonce"] = (200, ["nonce": "n"])
         http.routes["sync"] = (403, ["errors": [["code": "x", "meta": ["device_status": "revoked"]]]])
         let store = InMemorySecretStore()
-        let dd1 = await gate(v, http, store).begin(user: "a"); XCTAssertEqual(dd1, .deny("device revoked"))
+        let dd1 = await gate(v, http, store).begin(user: "a", passwordVerified: true); XCTAssertEqual(dd1, .deny("device revoked"))
         // Stays denied offline afterwards.
         http.down = true
-        let d = await gate(v, http, store).begin(user: "a")
+        let d = await gate(v, http, store).begin(user: "a", passwordVerified: true)
         if case .allow = d { XCTFail("revoked device must not allow") }
     }
 
     func testNeverSyncedAndUnreachableFailsClosed() async throws {
         let v = try Vectors.load(); let http = MockHTTP(); http.down = true
-        let dd2 = await gate(v, http, InMemorySecretStore()).begin(user: "a"); XCTAssertEqual(dd2, .deny("MFA state unknown"))
+        let dd2 = await gate(v, http, InMemorySecretStore()).begin(user: "a", passwordVerified: true); XCTAssertEqual(dd2, .deny("MFA state unknown"))
         var cfg = testConfig(); cfg.failOpenWhenNeverSynced = true
-        guard case .allow = await gate(v, http, InMemorySecretStore(), cfg: cfg).begin(user: "a") else { return XCTFail() }
+        guard case .allow = await gate(v, http, InMemorySecretStore(), cfg: cfg).begin(user: "a", passwordVerified: true) else { return XCTFail() }
     }
 
     func testNotEnrolledFailsClosed() async throws {
         let v = try Vectors.load(); var cfg = testConfig(); cfg.enrolled = false; cfg.deviceId = ""
-        let dd3 = await gate(v, MockHTTP(), InMemorySecretStore(), cfg: cfg).begin(user: "a"); XCTAssertEqual(dd3, .deny("device not enrolled"))
+        let dd3 = await gate(v, MockHTTP(), InMemorySecretStore(), cfg: cfg).begin(user: "a", passwordVerified: true); XCTAssertEqual(dd3, .deny("device not enrolled"))
     }
 
     func testOfflineRequiredNoBundleDenied() async throws {
         let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: true, bundle: nil))
         let store = InMemorySecretStore()
-        _ = await gate(v, http, store).begin(user: "a")   // caches required = true, no bundle
+        _ = await gate(v, http, store).begin(user: "a", passwordVerified: true)   // caches required = true, no bundle
         http.down = true
-        let dd4 = await gate(v, http, store).begin(user: "a"); XCTAssertEqual(dd4, .deny("offline and no valid offline bundle"))
+        let dd4 = await gate(v, http, store).begin(user: "a", passwordVerified: true); XCTAssertEqual(dd4, .deny("offline and no valid offline bundle"))
     }
 
     func testOfflineUnlockWithBundle() async throws {
         let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: true, bundle: v.bundle))
         let store = InMemorySecretStore(); let clock = TestClock(1_800_000_000_000)
-        let g1 = gate(v, http, store, clock: clock); _ = await g1.begin(user: "a")
+        let g1 = gate(v, http, store, clock: clock); _ = await g1.begin(user: "a", passwordVerified: true)
         XCTAssertNotNil(store.load(GateState.self, GateState.key)?.bundle)
         http.down = true
         let g = gate(v, http, store, clock: clock)
-        guard case .challenge(let p) = await g.begin(user: "a") else { return XCTFail() }
+        guard case .challenge(let p) = await g.begin(user: "a", passwordVerified: true) else { return XCTFail() }
         XCTAssertFalse(p.online); XCTAssertTrue(p.offlineAvailable); XCTAssertTrue(p.factors.isEmpty)
         let pin = v.pin["value"] as! String
         let secret = TOTP.base32Decode("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP")!
@@ -325,7 +356,7 @@ final class LoginGateTests: XCTestCase {
         XCTAssertEqual(g.offline(pin: pin, code: good), .retry("incorrect PIN or code"))  // replay
         // Events were queued and are uploaded on the next successful sync.
         http.down = false; http.routes["report"] = (200, [:])
-        let g3 = gate(v, http, store, clock: clock); _ = await g3.begin(user: "a")
+        let g3 = gate(v, http, store, clock: clock); _ = await g3.begin(user: "a", passwordVerified: true)
         XCTAssertTrue(http.calls.contains { $0.path == "report" })
         XCTAssertTrue(OfflineUnlock(store: store, clock: clock).queue.isEmpty)
     }
@@ -333,26 +364,26 @@ final class LoginGateTests: XCTestCase {
     func testOfflineRefusedWhileOnlineAndTamperedBundle() async throws {
         let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: true, bundle: v.bundle))
         let store = InMemorySecretStore()
-        let g = gate(v, http, store); _ = await g.begin(user: "a")
+        let g = gate(v, http, store); _ = await g.begin(user: "a", passwordVerified: true)
         XCTAssertEqual(g.offline(pin: "24681357", code: "000000"), .rejected("offline unlock unavailable"))
         var st = store.load(GateState.self, GateState.key)!; st.bundle!.generation += 1
         try store.save(st, GateState.key); http.down = true
-        let d = await gate(v, http, store).begin(user: "a")
+        let d = await gate(v, http, store).begin(user: "a", passwordVerified: true)
         XCTAssertEqual(d, .deny("offline and no valid offline bundle"))
     }
 
     func testKeepCacheFalseWipesBundle() async throws {
         let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: true, bundle: v.bundle))
-        let store = InMemorySecretStore(); _ = await gate(v, http, store).begin(user: "a")
+        let store = InMemorySecretStore(); _ = await gate(v, http, store).begin(user: "a", passwordVerified: true)
         online(http, syncBody(required: true, bundle: nil, keep: false))
-        _ = await gate(v, http, store).begin(user: "a")
+        _ = await gate(v, http, store).begin(user: "a", passwordVerified: true)
         XCTAssertNil(store.load(GateState.self, GateState.key)?.bundle)
     }
 
     func testForgedBundleMacIgnored() async throws {
         let v = try Vectors.load(); var b = v.bundle; b.mac = Data(repeating: 1, count: 32).b64u
         let http = MockHTTP(); online(http, syncBody(required: true, bundle: b))
-        let store = InMemorySecretStore(); _ = await gate(v, http, store).begin(user: "a")
+        let store = InMemorySecretStore(); _ = await gate(v, http, store).begin(user: "a", passwordVerified: true)
         XCTAssertNil(store.load(GateState.self, GateState.key)?.bundle)
     }
 }

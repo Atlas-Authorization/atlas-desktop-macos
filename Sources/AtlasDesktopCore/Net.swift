@@ -38,11 +38,13 @@ public struct AgentConfig: Codable, Equatable {
     public var failOpenWhenNeverSynced: Bool?
     /// Local account names this device is enrolled for. Nil/empty means every account.
     public var enrolledUsers: [String]?
+    /// Local accounts that skip Atlas entirely (their password is still verified). Default empty.
+    public var breakGlassAccounts: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
         case instanceUrl = "instance_url", publishableKey = "publishable_key", instanceId = "instance_id"
         case deviceId = "device_id", deviceKeyId = "device_key_id", enrolled
-        case failOpenWhenNeverSynced = "fail_open_when_never_synced", enrolledUsers = "enrolled_users"
+        case failOpenWhenNeverSynced = "fail_open_when_never_synced", enrolledUsers = "enrolled_users", breakGlassAccounts = "break_glass_accounts"
     }
 
     public static let defaultDir = "/Library/Application Support/Atlas"
