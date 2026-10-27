@@ -29,6 +29,8 @@ jobs:
         run: bash pam/tests/install_test.sh
       - name: PAM integration test (real PAM stack, test build, fake helper)
         run: sudo make -C pam itest
+      - name: Passkey helper app (unsigned build, entitlement plumbing only)
+        run: bash scripts/build-passkey-helper.sh --domain auth.example.com --out "$RUNNER_TEMP/passkey"
       - name: Build plugin (unsigned)
         run: bash scripts/build-plugin.sh
       - name: Build pkg (unsigned)

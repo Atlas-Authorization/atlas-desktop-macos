@@ -63,3 +63,38 @@ public func runEnrollMain(_ args: [String]) -> Int32 {
     sem.wait()
     return code
 }
+
+/// atlas-passkey enrol [--name LABEL] [--factor totp|push] [--code 123456] [--config path]
+/// Registers a security key as a passkey through this enrolled Mac. The person first passes another factor (the proof Atlas
+/// requires), then the platform shows its own security-key prompt. The authenticator is injected: AuthenticationServices in the
+/// signed helper app (a user session), or CTAP2 over USB HID.
+public func passkeyEnrolMain(_ args: [String], authenticator: PasskeyAuthenticator) async -> Int32 {
+    guard args.dropFirst().first == "enrol" else { err("usage: atlas-passkey enrol [--name LABEL] [--factor totp|push] [--code 123456]"); return 2 }
+    let factor = arg(args, "--factor") ?? "totp"
+    guard factor == "totp" || factor == "push" else { err("--factor must be totp or push"); return 2 }
+    do {
+        let cfg = try AgentConfig.load(path: arg(args, "--config") ?? AgentConfig.defaultPath)
+        let store = KeychainSecretStore()
+        guard cfg.enrolled, let key = DeviceKeyFactory.open(label: cfg.deviceKeyId, secrets: store, create: false) else { throw DesktopError.notEnrolled }
+        let client = ProtocolClient(config: cfg, key: key, http: URLSessionHTTPClient())
+        let ch = try await client.startChallenge(factor: factor)
+        if factor == "totp" {
+            var code = arg(args, "--code") ?? ProcessInfo.processInfo.environment["ATLAS_PASSKEY_CODE"]
+            if code == nil, let p = getpass("Code from your authenticator app: ") { code = String(cString: p) }
+            guard let c = code, try await client.verify(challengeId: ch.id, code: c) == "verified" else { err("that code was not accepted"); return 5 }
+        } else {
+            print("Approve the request on your phone. Number to pick: \(ch.numberMatch ?? "?")")
+            var ok = false
+            for _ in 0..<60 where !ok {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let s = try await client.verify(challengeId: ch.id)
+                if s == "verified" { ok = true } else if s != "pending" { break }
+            }
+            guard ok else { err("the push was not approved"); return 5 }
+        }
+        print("Touch your security key when macOS asks.")
+        let id = try await Passkey.enroll(client: client, authenticator: authenticator, proofChallengeId: ch.id, name: arg(args, "--name") ?? "Security key")
+        print("Passkey registered (\(id)).")
+        return 0
+    } catch { err("passkey registration failed: \(error)"); return 6 }
+}

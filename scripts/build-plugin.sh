@@ -22,7 +22,7 @@ for a in $ARCHS; do
     echo "skipping $a: swiftc failed"; tail -5 "$SCRATCH/err-$a"; [ "$a" = "$(uname -m)" ] && exit 1; continue
   fi
   clang -arch "$a" -mmacosx-version-min=$MIN -bundle -o "$SCRATCH/AtlasMFA-$a" "$SCRATCH/shim-$a.o" "$SCRATCH/swift-$a.o" \
-    -L/usr/lib/swift -Wl,-rpath,/usr/lib/swift -framework AppKit -framework Security -framework Foundation -framework OpenDirectory -framework CryptoKit
+    -L/usr/lib/swift -Wl,-rpath,/usr/lib/swift -framework AppKit -framework Security -framework Foundation -framework OpenDirectory -framework CryptoKit -framework IOKit
   built+=("$SCRATCH/AtlasMFA-$a")
 done
 [ ${#built[@]} -gt 0 ] || { echo "no architecture built" >&2; exit 1; }
