@@ -1,7 +1,7 @@
 name: ci
 on:
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
     tags: ["v*"]
   pull_request:
 
@@ -18,8 +18,17 @@ jobs:
         run: swift test
       - name: Lint scripts and plists
         run: |
-          for f in scripts/*.sh; do bash -n "$f"; done
+          for f in scripts/*.sh pam/tests/*.sh; do bash -n "$f"; done
           plutil -lint Plugin/Info.plist launchd/*.plist
+      - name: PAM module (build, unit tests)
+        run: |
+          make -C pam
+          make -C pam test
+          lipo -info pam/build/pam_atlas.so
+      - name: PAM install and uninstall scripts (staged filesystem)
+        run: bash pam/tests/install_test.sh
+      - name: PAM integration test (real PAM stack, test build, fake helper)
+        run: sudo make -C pam itest
       - name: Build plugin (unsigned)
         run: bash scripts/build-plugin.sh
       - name: Build pkg (unsigned)

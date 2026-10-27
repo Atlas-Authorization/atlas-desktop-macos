@@ -23,6 +23,9 @@ cp "$ROOT/scripts/install.sh" "$ROOT/scripts/uninstall.sh" "$PAY/usr/local/share
 mkdir -p "$PAY/usr/local/share/atlas-desktop/launchd" && cp "$ROOT/launchd/"*.plist "$PAY/usr/local/share/atlas-desktop/launchd/"
 cp -R "$OUT/AtlasMFA.bundle" "$PAY/usr/local/share/atlas-desktop/build/"; mkdir -p "$PAY/usr/local/share/atlas-desktop/build/bin"
 cp "$OUT/bin/"* "$PAY/usr/local/share/atlas-desktop/build/bin/"
+# PAM: shipped but not activated; scripts/pam-install.sh edits /etc/pam.d only when an admin runs it.
+cp "$ROOT/scripts/pam-install.sh" "$ROOT/scripts/pam-uninstall.sh" "$PAY/usr/local/share/atlas-desktop/scripts/"
+if [ -f "$OUT/pam/pam_atlas.so" ]; then mkdir -p "$PAY/usr/local/share/atlas-desktop/build/pam"; cp "$OUT/pam/pam_atlas.so" "$PAY/usr/local/share/atlas-desktop/build/pam/"; fi
 
 cat > "$SCRIPTS/postinstall" <<'POST'
 #!/bin/bash

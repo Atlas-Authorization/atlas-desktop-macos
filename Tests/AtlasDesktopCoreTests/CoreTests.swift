@@ -387,3 +387,115 @@ final class LoginGateTests: XCTestCase {
         XCTAssertNil(store.load(GateState.self, GateState.key)?.bundle)
     }
 }
+
+// MARK: - pam_atlas helper protocol
+
+final class PamHelperTests: XCTestCase {
+    func make(_ http: MockHTTP, cfg: AgentConfig? = nil, store: SecretStore = InMemorySecretStore(), clock: Clock = TestClock(1_800_000_000_000), keyless: Bool = false) throws -> PamHelper {
+        let v = try Vectors.load()
+        try? store.set(StateSync.macKeyName, Data(v.macKey.b64u.utf8))
+        let c = cfg ?? testConfig()
+        let g: LoginGate? = keyless ? nil : LoginGate(config: c, key: v.key, http: http, secrets: store, clock: clock, sleep: { _ in try? await Task.sleep(nanoseconds: 5_000_000) })
+        return PamHelper(config: c, gate: g)
+    }
+    func online(_ http: MockHTTP, _ body: [String: Any]) { http.routes["nonce"] = (200, ["nonce": "n"]); http.routes["sync"] = (200, body) }
+    func run(_ h: PamHelper, _ line: String) async -> (lines: [String], more: Bool) {
+        var out: [String] = []
+        let more = await h.handle(line, out: { out.append($0) })
+        return (out, more)
+    }
+
+    func testChallengeAllowDenyAndBreakGlass() async throws {
+        let http = MockHTTP(); online(http, syncBody(required: true, factors: ["push", "totp", "passkey"]))
+        let r = await run(try make(http), "BEGIN alice sudo")
+        XCTAssertEqual(r.lines, ["CHALLENGE online=1 push=1 totp=1 offline=0 pin=0"]); XCTAssertTrue(r.more)   // passkey is not offered to a terminal
+
+        let off = MockHTTP(); online(off, syncBody(required: false))
+        let a = await run(try make(off), "BEGIN alice sshd"); XCTAssertEqual(a.lines, ["ALLOW MFA not required"]); XCTAssertTrue(a.more)
+
+        var cfg = testConfig(); cfg.breakGlassAccounts = ["atlas-breakglass"]
+        let bg = MockHTTP()
+        let b = await run(try make(bg, cfg: cfg), "BEGIN atlas-breakglass screensharing")
+        XCTAssertEqual(b.lines, ["ALLOW break-glass account"]); XCTAssertTrue(bg.calls.isEmpty)       // no network for a break-glass login
+
+        let rev = MockHTTP(); rev.routes["nonce"] = (200, ["nonce": "n"]); rev.routes["sync"] = (403, ["errors": [["code": "forbidden", "meta": ["device_status": "revoked"]]]])
+        let d = await run(try make(rev), "BEGIN alice su"); XCTAssertEqual(d.lines, ["DENY device revoked"]); XCTAssertFalse(d.more)
+    }
+
+    func testPasskeyOnlyPolicyIsRefusedWithoutOfflineBundle() async throws {
+        let http = MockHTTP(); online(http, syncBody(required: true, factors: ["passkey"], enabled: false))
+        let r = await run(try make(http), "BEGIN alice sudo")
+        XCTAssertEqual(r.lines, ["DENY no usable factor for this service"]); XCTAssertFalse(r.more)
+    }
+
+    func testBadRequestsNeverReachTheGate() async throws {
+        let http = MockHTTP(); online(http, syncBody(required: false))
+        for line in ["BEGIN al\u{0}ice sudo", "BEGIN alice", "BEGIN a b c", "BEGIN -rf sudo", "BEGIN alice sudo;x", "BEGIN alice\tsudo", "BEGIN  alice sudo", ""] {
+            let h = try make(http); let r = await run(h, line)
+            XCTAssertEqual(r.lines.count, 1, line); XCTAssertTrue(r.lines[0].hasPrefix("DENY") || r.lines[0].hasPrefix("REJECT"), line); XCTAssertFalse(r.more, line)
+        }
+        XCTAssertTrue(http.calls.isEmpty)
+        // A second BEGIN, or a command before BEGIN, is refused.
+        let h = try make(http)
+        let early = await run(h, "CODE 123456"); XCTAssertEqual(early.lines.first?.hasPrefix("REJECT"), true)
+        _ = await run(h, "BEGIN alice sudo")
+        let again = await run(h, "BEGIN alice sudo"); XCTAssertEqual(again.lines.first?.hasPrefix("DENY"), true)
+        let unknown = await run(h, "SUDO"); XCTAssertFalse(unknown.more)
+    }
+
+    func testCodeFlow() async throws {
+        let http = MockHTTP(); online(http, syncBody(required: true))
+        http.routes["challenges"] = (201, ["id": "c1", "factor": "totp", "expires_at": 1])
+        let h = try make(http)
+        _ = await run(h, "BEGIN alice sudo")
+        http.routes["challenges/c1/verify"] = (422, ["errors": [["code": "invalid_code"]]])
+        let wrong = await run(h, "CODE 000000"); XCTAssertEqual(wrong.lines, ["RETRY incorrect code"])
+        http.routes["challenges/c1/verify"] = (200, ["status": "verified"])
+        let ok = await run(h, "CODE 123456"); XCTAssertEqual(ok.lines, ["OK"])
+        // Malformed codes never go out.
+        let n = http.calls.count
+        for bad in ["CODE 12345", "CODE 1234567", "CODE abcdef", "CODE", "CODE 123456 x"] { let r = await run(h, bad); XCTAssertEqual(r.lines.first?.hasPrefix("REJECT"), true, bad) }
+        XCTAssertEqual(http.calls.count, n)
+    }
+
+    func testPushFlowReportsTheNumberThenTheOutcome() async throws {
+        let http = MockHTTP(); online(http, syncBody(required: true))
+        http.routes["challenges"] = (201, ["id": "c1", "factor": "push", "number_match": "42"])
+        http.routes["challenges/c1/verify"] = (200, ["status": "verified"])
+        let h = try make(http); _ = await run(h, "BEGIN alice sudo")
+        let r = await run(h, "PUSH"); XCTAssertEqual(r.lines, ["NUMBER 42", "OK"])
+        let http2 = MockHTTP(); online(http2, syncBody(required: true))
+        http2.routes["challenges"] = (201, ["id": "c2", "factor": "push", "number_match": "7"]); http2.routes["challenges/c2/verify"] = (200, ["status": "failed"])
+        let h2 = try make(http2); _ = await run(h2, "BEGIN alice sudo")
+        let d = await run(h2, "PUSH"); XCTAssertEqual(d.lines, ["NUMBER 7", "REJECT denied on phone"])
+        // push is refused when the policy does not allow it
+        let http3 = MockHTTP(); online(http3, syncBody(required: true, factors: ["totp"]))
+        let h3 = try make(http3); _ = await run(h3, "BEGIN alice sudo")
+        let n = await run(h3, "PUSH"); XCTAssertEqual(n.lines, ["REJECT push unavailable"])
+    }
+
+    func testOfflineFlowAndUnreachableFallback() async throws {
+        let v = try Vectors.load(); let http = MockHTTP(); online(http, syncBody(required: true, bundle: v.bundle))
+        let store = InMemorySecretStore(); let clock = TestClock(1_800_000_000_000)
+        _ = await run(try make(http, store: store, clock: clock), "BEGIN a sshd")   // caches the bundle
+        http.down = true
+        let h = try make(http, store: store, clock: clock)
+        let c = await run(h, "BEGIN a sshd"); XCTAssertEqual(c.lines, ["CHALLENGE online=0 push=0 totp=0 offline=1 pin=1"])
+        let pin = v.pin["value"] as! String
+        let secret = TOTP.base32Decode("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP")!
+        let good = TOTP.code(secret: secret, step: clock.nowMs / 30000)
+        let wrong = await run(h, "OFFLINE \(pin) 000000"); XCTAssertEqual(wrong.lines.first?.hasPrefix("RETRY"), true)
+        let ok = await run(h, "OFFLINE \(pin) \(good)"); XCTAssertEqual(ok.lines, ["OK"])
+        let replay = await run(h, "OFFLINE \(pin) \(good)"); XCTAssertEqual(replay.lines.first?.hasPrefix("RETRY"), true)
+        let bad = await run(h, "OFFLINE 12 \(good)"); XCTAssertEqual(bad.lines.first?.hasPrefix("REJECT"), true)
+    }
+
+    func testNoDeviceKeyOnlyBreakGlassAndUncoveredAccountsPass() async throws {
+        var cfg = testConfig(); cfg.enrolledUsers = ["alice"]; cfg.breakGlassAccounts = ["bg"]
+        let http = MockHTTP()
+        let a = await run(try make(http, cfg: cfg, keyless: true), "BEGIN alice sudo"); XCTAssertEqual(a.lines, ["DENY this Mac is not enrolled"])
+        let b = await run(try make(http, cfg: cfg, keyless: true), "BEGIN bob sudo"); XCTAssertEqual(b.lines, ["ALLOW account not enrolled"])
+        let c = await run(try make(http, cfg: cfg, keyless: true), "BEGIN bg sudo"); XCTAssertEqual(c.lines, ["ALLOW break-glass account"])
+        XCTAssertTrue(http.calls.isEmpty)
+    }
+}

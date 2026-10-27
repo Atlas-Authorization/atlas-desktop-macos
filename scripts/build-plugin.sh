@@ -35,8 +35,12 @@ if [ "${SKIP_TOOLS:-0}" != 1 ]; then
   ARCHFLAGS=(); for a in $ARCHS; do ARCHFLAGS+=(--arch "$a"); done
   swift build -c release --package-path "$ROOT" --scratch-path "$SCRATCH/spm" "${ARCHFLAGS[@]}" --product atlas-sync >/dev/null
   swift build -c release --package-path "$ROOT" --scratch-path "$SCRATCH/spm" "${ARCHFLAGS[@]}" --product atlas-enroll >/dev/null
+  swift build -c release --package-path "$ROOT" --scratch-path "$SCRATCH/spm" "${ARCHFLAGS[@]}" --product atlas-pam-helper >/dev/null
   BIN="$(swift build -c release --package-path "$ROOT" --scratch-path "$SCRATCH/spm" "${ARCHFLAGS[@]}" --show-bin-path)"
-  cp "$BIN/atlas-sync" "$BIN/atlas-enroll" "$OUT/bin/"
+  cp "$BIN/atlas-sync" "$BIN/atlas-enroll" "$BIN/atlas-pam-helper" "$OUT/bin/"
+  # pam_atlas.so: the same Atlas step for sshd, su, sudo and screensharing (installed separately by scripts/pam-install.sh).
+  CARCH=(); for a in $ARCHS; do CARCH+=(-arch "$a"); done
+  make -C "$ROOT/pam" OUT="$OUT/pam" ARCHS="${CARCH[*]}" >/dev/null
 fi
 
 if [ -n "${ATLAS_CODESIGN_IDENTITY:-}" ]; then

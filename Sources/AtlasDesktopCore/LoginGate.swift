@@ -176,6 +176,12 @@ public final class LoginGate {
             guard let opts = c.passkeyOptions else { return .rejected("no passkey options") }
             let assertion = try await provider(opts)
             return try await client.verify(challengeId: c.id, assertion: assertion) == "verified" ? .allowed : .rejected("passkey rejected")
+        } catch PasskeyError.cancelled { return .rejected("cancelled")
+        } catch PasskeyError.unavailable { return .unsupported
+        } catch is PasskeyError { return .rejected("passkey failed")
+        } catch DesktopError.api(let s, _, _) where s == 400 || s == 422 {
+            // A rejected assertion spent its challenge; the next attempt starts a new one.
+            return .rejected("passkey rejected")
         } catch { return classify(error) }
     }
 
