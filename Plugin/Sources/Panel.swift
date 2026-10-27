@@ -11,13 +11,14 @@ final class MFAPanel: NSObject {
     let pin = NSSecureTextField(frame: .zero)
     let pushB = NSButton(title: "Approve on phone", target: nil, action: nil)
     let codeB = NSButton(title: "Use code", target: nil, action: nil)
-    let passkeyB = NSButton(title: "Passkey", target: nil, action: nil)
+    let passkeyB = NSButton(title: "Security key", target: nil, action: nil)
     let offlineB = NSButton(title: "Offline code", target: nil, action: nil)
     let goB = NSButton(title: "Verify", target: nil, action: nil)
     let cancelB = NSButton(title: "Cancel", target: nil, action: nil)
     var onPush: () -> Void = {}, onCode: () -> Void = {}, onPasskey: () -> Void = {}, onOffline: () -> Void = {}
     var onSubmit: (String, String) -> Void = { _, _ in }, onCancel: () -> Void = {}
     var mode = "none"
+    var pinContinuation: CheckedContinuation<String?, Never>?
 
     override init() {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
@@ -49,18 +50,33 @@ final class MFAPanel: NSObject {
         self.mode = mode
         pushB.isHidden = !factors.contains("push"); codeB.isHidden = !factors.contains("totp")
         passkeyB.isHidden = !factors.contains("passkey"); offlineB.isHidden = !offline
-        code.isHidden = !(mode == "code" || mode == "offline"); pin.isHidden = !(mode == "offline" && pinRequired)
-        goB.isHidden = code.isHidden; number.isHidden = mode != "push"
+        code.isHidden = !(mode == "code" || mode == "offline"); pin.isHidden = !((mode == "offline" && pinRequired) || mode == "keypin")
+        goB.isHidden = code.isHidden && mode != "keypin"; number.isHidden = mode != "push"
         code.stringValue = ""; pin.stringValue = ""
         if !code.isHidden { window.makeFirstResponder(pin.isHidden ? code : pin) }
+        else if mode == "keypin" { window.makeFirstResponder(pin) }
+    }
+
+    /// Asks for the security key's PIN (not the offline PIN). nil = the person cancelled.
+    @MainActor func askPIN(retries: Int?) async -> String? {
+        status.stringValue = retries.map { "Wrong PIN. \($0) tries left. Enter the security key PIN." } ?? "Enter the PIN of your security key."
+        pin.placeholderString = "Security key PIN"
+        show(mode: "keypin", factors: [], offline: false)
+        return await withCheckedContinuation { pinContinuation = $0 }
     }
 
     @objc func push() { onPush() }
     @objc func codeTap() { onCode() }
     @objc func passkey() { onPasskey() }
     @objc func offline() { onOffline() }
-    @objc func submit() { onSubmit(code.stringValue, pin.stringValue) }
-    @objc func cancel() { onCancel() }
+    @objc func submit() {
+        if let c = pinContinuation { pinContinuation = nil; let v = pin.stringValue; pin.stringValue = ""; pin.placeholderString = "Offline PIN"; c.resume(returning: v.isEmpty ? nil : v); return }
+        onSubmit(code.stringValue, pin.stringValue)
+    }
+    @objc func cancel() {
+        if let c = pinContinuation { pinContinuation = nil; pin.stringValue = ""; pin.placeholderString = "Offline PIN"; c.resume(returning: nil); return }
+        onCancel()
+    }
 }
 
 /// Runs one gate session; calls `done(allow)` exactly once.
@@ -96,7 +112,11 @@ final class MFASession {
                 if !cfg.appliesTo(user: user) { return self.finish(true) }
                 return self.denyLater("This Mac has no device key. Contact your administrator.")
             }
-            let g = LoginGate(config: cfg, key: key, http: URLSessionHTTPClient(), secrets: store)
+            // Security keys over USB HID: AuthenticationServices cannot run inside the login window (no entitlements, no app identity),
+            // so the key is driven with CTAP2 directly. The PIN is asked on this panel.
+            let keys = CTAP2Authenticator.usb(pin: { retries in await self.panel.askPIN(retries: retries) },
+                                              status: { msg in DispatchQueue.main.async { self.panel.status.stringValue = msg } })
+            let g = LoginGate(config: cfg, key: key, http: URLSessionHTTPClient(), secrets: store, passkey: Passkey.provider(for: keys))
             self.gate = g
             switch await g.begin(user: self.user, passwordVerified: self.passwordVerified) {
             case .allow: self.finish(true)
@@ -137,7 +157,7 @@ final class MFASession {
             prompt = GatePrompt(online: false, factors: [], offlineAvailable: prompt?.offlineAvailable ?? false, pinRequired: prompt?.pinRequired ?? false)
             showMode(prompt!.offlineAvailable ? "offline" : "none")
             if !prompt!.offlineAvailable { denyLater("Cannot reach Atlas and no offline code is available.") }
-        case .unsupported: panel.status.stringValue = "Passkeys are not available at the login window."
+        case .unsupported: panel.status.stringValue = "Security keys are not available here."
         case .locked: panel.status.stringValue = "Too many attempts. Try again in 15 minutes."
         }
     }
@@ -154,6 +174,7 @@ final class MFASession {
 
     @MainActor func runPasskey() {
         guard let g = gate else { return }
+        panel.status.stringValue = "Insert and touch your security key."
         Task { @MainActor in self.handle(await g.runPasskey()) }
     }
 

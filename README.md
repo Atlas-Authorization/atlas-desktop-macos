@@ -16,7 +16,9 @@ The default is to **fail closed**: a user who needs MFA never gets in without a 
 | `Sources/atlas-enroll`, `atlas-sync` | CLI: enrol this Mac; hourly sync (run by a LaunchDaemon) |
 | `Plugin/` | thin Objective-C shim (`AuthorizationPluginCreate`, one mechanism `check`) + Swift panel UI. Compiled together with the core by `scripts/build-plugin.sh` |
 | `launchd/` | `net.atlasauth.desktop.sync.plist` (at load, hourly, and on network-interface changes) |
-| `scripts/` | build, install, uninstall, pkg, notarize |
+| `scripts/` | build, install, uninstall, pkg, notarize; `pam-install.sh` / `pam-uninstall.sh`, `filevault-mitigation.sh`, `build-passkey-helper.sh` |
+| `pam/` | `pam_atlas.so` (C), its tests and the conversation core |
+| `Sources/atlas-pam-helper`, `Sources/atlas-passkey` | the agent side of the PAM module; security-key registration CLI / helper app |
 | `Tests/` | XCTest suite that reproduces the reference vectors in `protocol-vectors.json` |
 
 Files on disk: `/Library/Application Support/Atlas/config.json` (no secrets), the device-bound bundle MAC key,
@@ -27,7 +29,7 @@ offline bundle and unlock state in the System keychain, the device key in the Se
 
 ```sh
 swift build
-swift test            # 36 tests; scrypt N=16384 needs optimisation, Package.swift keeps -O in debug
+swift test            # core, PAM helper protocol, passkey and CTAP2 tests; scrypt N=16384 needs optimisation, Package.swift keeps -O in debug
 bash scripts/build-plugin.sh    # -> build/AtlasMFA.bundle (arm64 + x86_64) and build/bin/atlas-{sync,enroll}
 bash scripts/build-pkg.sh       # -> dist/AtlasDesktopMFA-<version>-unsigned.pkg
 ```
@@ -81,7 +83,56 @@ covered by a test). C buffers holding the password are wiped; the brief Swift `S
 `loginwindow:done`, with no credential mechanism after it. The same check runs on the edited plist before writing and on the rule read back
 after writing; if the read-back fails the saved original is written back. Nothing in the login rule other than `builtin:auto-login` /
 `forward-login` (which precede authentication and are denied by the password re-check) can start a session without passing the mechanism.
-Not covered: sessions that do not use the login window rule (SSH, `su`, Screen Sharing/Remote Management login, FileVault pre-boot unlock).
+Other doors: SSH, `su`, `sudo` and Screen Sharing are covered by the PAM module below; the FileVault pre-boot unlock cannot be covered by anything third-party (see FileVault).
+
+## PAM: sshd, su, sudo and screen sharing
+
+`pam/` builds `pam_atlas.so`, the same Atlas step for the services that never touch the login window. It uses the same agent: the module starts
+`atlas-pam-helper`, which runs the same `LoginGate` (same `config.json`, same offline bundle in the System keychain, same `break_glass_accounts` and
+`enrolled_users` rules). Factors: push with number match, authenticator code, offline PIN + code. Passkeys are not offered in a terminal.
+
+```sh
+make -C pam                       # pam/build/pam_atlas.so (universal)
+make -C pam test                  # unit tests of the conversation logic
+sudo make -C pam itest            # real PAM stack, test build of the module, fake helper
+bash pam/tests/install_test.sh    # install and uninstall scripts against a staged filesystem
+sudo scripts/pam-install.sh --dry-run
+sudo scripts/pam-install.sh
+```
+
+Behaviour: the module goes after the password module. It re-checks the password that module collected against OpenDirectory, so a wrong password never starts a push; no
+password (a smart card, say) means refusal. Every failure refuses: helper missing or not root-owned, a garbled or late reply, a closed pipe, a timeout.
+Break-glass: `pam-install.sh` refuses unless `config.json` lists a break-glass account (`--allow-no-break-glass` to override); that account skips Atlas in every service,
+and the kill switch file `/Library/Application Support/Atlas/pam-disabled` (root-owned, not group/world-writable) turns the module into a pass-through without editing `/etc/pam.d`.
+
+`pam-install.sh` edits `/etc/pam.d/{sshd,sudo,su,screensharing}` safely: each file must have the expected layout (an `auth ... pam_opendirectory.so` line to follow; the only `sufficient`
+auth modules allowed ahead of it are `pam_smartcard.so` and `pam_rootok.so`), every file is checked before any is written, writes are atomic and read back, the first original is kept in
+`/Library/Application Support/Atlas/pam-backup`, and if anything fails every file already changed is put back. `pam-uninstall.sh [--purge]` restores the original byte for byte (or removes only our
+line if the OS has rewritten the file since). macOS updates may replace files in `/etc/pam.d`: re-run `pam-install.sh` (idempotent).
+SSH: the PAM auth stack runs for password and keyboard-interactive logins; for key-only logins add `AuthenticationMethods publickey,keyboard-interactive` to `sshd_config`.
+
+## FileVault
+
+**Third-party code cannot gate the FileVault unlock.** With FileVault on, the Mac boots into a pre-boot environment that loads no third-party code (Apple, developer forums
+thread 758542: "it boots to pre-boot environment that will not load any third-party code ... This affects authorisation plug-ins as well"). Neither this plugin nor `pam_atlas.so` can run there, and no
+setting changes that. What is supported is to require Atlas at the **first login after the unlock**: by default macOS completes that login with the credentials typed into FileVault and
+shows no login window (Apple: "the mechanics of that are not documented"). `DisableFDEAutoLogin` makes the login window appear after the unlock, so the person types the password again and the
+login rule (`system.login.console`, which contains `AtlasMFA:check`) runs. `sudo scripts/filevault-mitigation.sh --enable` sets it (`com.apple.loginwindow`), verifies it and warns if the login rule does not contain
+the Atlas mechanism; `--disable` and `--status` do the rest. Via MDM: a `com.apple.loginwindow` payload with `DisableFDEAutoLogin` true. The disk password still unlocks the disk by itself.
+
+## Security keys (passkeys)
+
+What works where, and why:
+
+| Where | Works | Why / how |
+|---|---|---|
+| Login window, **security key over USB** | yes, `CTAP2Authenticator` | CTAP2 over USB HID, written against FIDO CTAP 2.1: no entitlement, no app identity needed. The panel asks the key's PIN. Unverified on real hardware (software key in the tests). |
+| Login window, AuthenticationServices (`ASAuthorizationSecurityKeyPublicKeyCredentialProvider`, `ASAuthorizationPlatformPublicKeyCredentialProvider`) | **impossible** | AuthenticationServices needs a signed app with the `com.apple.developer.associated-domains` entitlement for the relying-party domain and the domain's apple-app-site-association file naming that app (Apple staff: "The application identifier (and entitlements in general) are part of your application's code signature", developer forums thread 737810). An authorization plugin is a bundle loaded into Apple's SecurityAgent/loginwindow process; entitlements belong to the main executable, so a plugin has no identity of its own to present. |
+| Login window, Touch ID / iCloud Keychain **platform** passkeys | **impossible** | They live in the person's keychain, which is locked until the password has been used to log in: at the login window there is nothing to read. |
+| User session, security key through AuthenticationServices | yes, with a signed helper | `scripts/build-passkey-helper.sh --domain <passkey domain> --team <TEAMID>` builds and signs `AtlasPasskey.app` (needs your Developer ID and a provisioning profile with Associated Domains); list `<TEAMID>.net.atlasauth.desktop.passkey` in the instance's native apps and Atlas serves it in the association file. Unsigned, macOS refuses its requests. |
+| Registering a key | `atlas-passkey enrol` | `--via ctap` (default, no signing) or `--via authservices` (the signed app). You pass a code or push first. |
+
+The closest alternative to a platform passkey at the login window is therefore a **security key** driven over CTAP2, with Touch ID or iCloud passkeys still usable after login in the user session.
 
 ## Offline behaviour
 
@@ -125,5 +176,6 @@ We have **not** verified what macOS does when the rule lists a mechanism whose b
 - Behaviour inside a real loginwindow / SecurityAgent (UI placement, key and System-keychain access from that context, focus, FileVault pre-boot interplay).
 - Secure Enclave key creation and ECDH on real hardware (tests use the software key; the SE path is compiled, not exercised).
 - Code signing, hardened-runtime loading, notarisation and the signed pkg path.
-- Passkey (WebAuthn) at the login window: only the callback hook exists.
+- Security keys over CTAP2 against real keys (the tests use a software key); the PIN panel in the login window; the PAM module on a real sshd/sudo/screensharing stack beyond the CI test service; `pam-install.sh` against a real macOS `/etc/pam.d` after an OS update.
+- The signed passkey helper app (needs your Developer ID, profile and association file).
 - The `authenticate`-rule opt-in on every macOS version.

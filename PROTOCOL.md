@@ -41,6 +41,8 @@ config carries it as `instance_id`, see `config` below). `key id` is the JWK `x`
 | `challenges` (start) | `challenge` | from `nonce` | the factor name |
 | `challenges/:id/verify` | `verify` | the challenge id | none |
 | `report` | `report` | from `nonce` | base64url SHA-256 of the `payload` string as sent |
+| `passkeys/options` | `passkey_options` | from `nonce` | the proof challenge id |
+| `passkeys/:id/enrol` | `passkey_enrol` | the registration id | none |
 
 A nonce is single use and lives five minutes.
 
@@ -82,6 +84,24 @@ A challenge verifies once.
 `pin`: `{ device_id, nonce, signature, pin }`. `report`: `{ device_id, nonce, signature, payload }` where
 `payload` is a JSON string of up to 200 events `{ at (epoch ms), outcome ("success"|"failure"), bundle_id?, reason? }`.
 Upload queued offline events on the next successful sync.
+
+## Passkeys (security keys)
+
+The `passkey` factor needs the policy's `passkey_rp_id` / `passkey_scope` / `passkey_require_uv` (see `sync` -> `passkey`:
+`{ rp_id, origin, scope, user_verification, device_passkeys }`). The origin is always `https://<rp_id>`.
+
+- **Assertion at sign-in.** `challenges` with factor `passkey` returns `passkey_options`:
+  `{ challenge, rpId, origin, allowCredentials: [{type, id, transports}], userVerification, timeout }`. The agent builds
+  `clientDataJSON` = `{"type":"webauthn.get","challenge":<challenge>,"origin":<origin>,"crossOrigin":false}` (or lets the platform build
+  it, then checks it says exactly that), has the authenticator sign `authenticatorData || SHA-256(clientDataJSON)` and posts
+  `assertion: { challenge, credential_id, authenticator_data, client_data_json, signature }` (base64url) to `verify`.
+  The agent refuses options whose `origin` is not `https://` + `rpId` or whose challenge is under 16 bytes.
+- **Registering a key through this workstation.** First pass any other factor (push or code) on this device: that verified challenge is
+  the *proof*. Within 5 minutes call `passkeys/options` `{ device_id, nonce, signature, proof_challenge_id }` (signed with `extra` = the proof id)
+  -> `201 { registration_id, passkey_options }` (WebAuthn creation options plus `origin`). Create the credential, then
+  `POST passkeys/:registration_id/enrol` `{ device_id, signature, credential: { challenge, attestation_object, client_data_json }, name?, transports? }`
+  (the signature covers the registration id, which is single use) -> `201 { id, ... }`. One proof registers one key; a device holds at most 10.
+  A key registered this way answers only this factor and never a web sign-in.
 
 ## Offline bundle
 

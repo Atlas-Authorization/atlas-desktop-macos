@@ -113,6 +113,24 @@ final class ProtocolClient {
         return s
     }
 
+    /// Creation options for a passkey on this workstation. Needs a challenge of this device the person has just verified.
+    func passkeyOptions(proofChallengeId: String) async throws -> (id: String, options: [String: Any]) {
+        let n = try await nonce()
+        let d = try await post("passkeys/options", ["device_id": config.deviceId, "nonce": n, "signature": try sig("passkey_options", n, proofChallengeId), "proof_challenge_id": proofChallengeId])
+        guard let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let id = o["registration_id"] as? String, let opts = o["passkey_options"] as? [String: Any]
+        else { throw DesktopError.malformed("passkey options") }
+        return (id, opts)
+    }
+
+    /// Finishes the registration; the signature covers the (single-use) registration id. Returns the passkey id.
+    func passkeyEnrol(registrationId: String, credential: [String: String], name: String?, transports: [String]) async throws -> String {
+        var body: [String: Any] = ["device_id": config.deviceId, "signature": try sig("passkey_enrol", registrationId), "credential": credential, "transports": transports]
+        if let name = name, !name.isEmpty { body["name"] = name }
+        let d = try await post("passkeys/\(registrationId)/enrol", body)
+        guard let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let id = o["id"] as? String else { throw DesktopError.malformed("passkey") }
+        return id
+    }
+
     func report(_ events: [OfflineEvent]) async throws {
         let payload = String(data: try JSONEncoder().encode(Array(events.prefix(200))), encoding: .utf8)!
         let n = try await nonce()
