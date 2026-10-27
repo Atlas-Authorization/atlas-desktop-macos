@@ -128,8 +128,10 @@ final class SoftKey: CTAPHIDTransport {
         return outbox.removeFirst()
     }
 
+    private var needsTouch = false   // a real key waits for a touch only while it runs getAssertion / makeCredential
     private func send(_ status: UInt8, _ body: CBOR? = nil) {
-        if keepalives { outbox += CTAPHID.split(cid: cid, cmd: CTAPHID.cmdKeepalive, payload: Data([CTAPHID.keepaliveUPNeeded])) }
+        defer { needsTouch = false }
+        if keepalives && needsTouch { outbox += CTAPHID.split(cid: cid, cmd: CTAPHID.cmdKeepalive, payload: Data([CTAPHID.keepaliveUPNeeded])) }
         outbox += CTAPHID.split(cid: cid, cmd: CTAPHID.cmdCBOR, payload: Data([status]) + (body?.encode() ?? Data()))
     }
 
@@ -170,6 +172,7 @@ final class SoftKey: CTAPHIDTransport {
 
     private func respond(_ payload: Data) {
         let cmd = payload[payload.startIndex]
+        needsTouch = cmd == CTAP2.cmdGetAssertion || cmd == CTAP2.cmdMakeCredential
         let body = payload.count > 1 ? (try? CBOR.decode(payload.dropFirst())) : nil
         if let f = failWith, cmd == CTAP2.cmdGetAssertion || cmd == CTAP2.cmdMakeCredential { send(f); return }
         switch cmd {
@@ -253,11 +256,11 @@ final class CTAP2Tests: XCTestCase {
         XCTAssertEqual(ch.cid, 0x0A0B0C0D)
         var seen: [UInt8] = []
         let r = try ch.cbor(Data([CTAP2.cmdGetInfo]), timeout: 2, keepalive: { seen.append($0) })
-        XCTAssertEqual(r.first, 0); XCTAssertEqual(seen, [CTAPHID.keepaliveUPNeeded])
+        XCTAssertEqual(r.first, 0); XCTAssertEqual(seen, [])   // getInfo needs no touch
         // A cancel request reaches the key
         key.failWith = CTAP2.keepaliveCancel
-        let c = try ch.cbor(Data([CTAP2.cmdGetAssertion]) + CBOR.map([]).encode(), timeout: 2, shouldCancel: { true })
-        XCTAssertTrue(key.cancelSeen); XCTAssertEqual(c.first, CTAP2.keepaliveCancel)
+        let c = try ch.cbor(Data([CTAP2.cmdGetAssertion]) + CBOR.map([]).encode(), timeout: 2, keepalive: { seen.append($0) }, shouldCancel: { true })
+        XCTAssertTrue(key.cancelSeen); XCTAssertEqual(c.first, CTAP2.keepaliveCancel); XCTAssertEqual(seen, [CTAPHID.keepaliveUPNeeded])
         // A key that never answers: a timeout, not a hang
         final class Silent: CTAPHIDTransport { func write(_ p: Data) throws {}; func read(timeout: TimeInterval) throws -> Data { Thread.sleep(forTimeInterval: 0.01); throw CTAPHIDError.timeout }; func close() {} }
         XCTAssertThrowsError(try CTAPHIDChannel(Silent()).open(timeout: 0.05))
