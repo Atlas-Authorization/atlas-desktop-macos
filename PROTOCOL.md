@@ -14,6 +14,10 @@ with the header `X-Publishable-Key: <publishable key>`. Responses are JSON; erro
   non-exportable in hardware (Windows: TPM through CNG "Microsoft Platform Crypto
   Provider"; macOS: Secure Enclave). It must support signing (ES256) and ECDH key
   agreement. The public half is sent as a JWK `{ "kty":"EC","crv":"P-256","x","y" }`.
+- Hardware that cannot use one key for both signing and key agreement (typical for TPM keys) creates a
+  **second P-256 key (ECDH)** and sends its public JWK as `seal_public_key` at enrolment. Offline bundles are
+  then sealed to that key instead of the signing key; opening them is identical (ECDH with the seal private key).
+  Without `seal_public_key` bundles are sealed to the signing key.
 - Signatures: ECDSA over SHA-256 of the UTF-8 message, **IEEE P1363** (raw `r || s`,
   64 bytes), base64url without padding.
 - Every base64url value is unpadded.
@@ -43,7 +47,7 @@ A nonce is single use and lives five minutes.
 ## Calls
 
 ### `enroll`
-Body: `{ code, public_key, signature, hostname, platform ("windows"|"macos"), agent_version, pin }`.
+Body: `{ code, public_key, seal_public_key?, signature, hostname, platform ("windows"|"macos"), agent_version, pin }`.
 `pin` is 6-12 digits (required when the policy requires an offline PIN).
 Response 201: `{ device: { id, ... }, bundle_mac_key, offline_otp_uri }`.
 Persist `device.id` and `bundle_mac_key` (protect it: DPAPI/Keychain; it authenticates
