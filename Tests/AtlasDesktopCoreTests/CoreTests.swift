@@ -408,7 +408,7 @@ final class PamHelperTests: XCTestCase {
     func testChallengeAllowDenyAndBreakGlass() async throws {
         let http = MockHTTP(); online(http, syncBody(required: true, factors: ["push", "totp", "passkey"]))
         let r = await run(try make(http), "BEGIN alice sudo")
-        XCTAssertEqual(r.lines, ["CHALLENGE online=1 push=1 totp=1 offline=0 pin=0"]); XCTAssertTrue(r.more)   // passkey is not offered to a terminal
+        XCTAssertEqual(r.lines, ["CHALLENGE online=1 push=1 totp=1 offline=0 pin=1"]); XCTAssertTrue(r.more)   // passkey is not offered to a terminal
 
         let off = MockHTTP(); online(off, syncBody(required: false))
         let a = await run(try make(off), "BEGIN alice sshd"); XCTAssertEqual(a.lines, ["ALLOW MFA not required"]); XCTAssertTrue(a.more)

@@ -114,7 +114,7 @@ public enum Passkey {
 
     /// {"type":...,"challenge":...,"origin":...,"crossOrigin":false} with a stable key order.
     public static func clientDataJSON(type: String, challenge: String, origin: String) -> Data {
-        func esc(_ s: String) -> String { String(data: try! JSONSerialization.data(withJSONObject: [s], options: []), encoding: .utf8)!.dropFirst().dropLast().description }
+        func esc(_ s: String) -> String { String(data: try! JSONSerialization.data(withJSONObject: [s], options: [.withoutEscapingSlashes]), encoding: .utf8)!.dropFirst().dropLast().description }
         return Data("{\"type\":\(esc(type)),\"challenge\":\(esc(challenge)),\"origin\":\(esc(origin)),\"crossOrigin\":false}".utf8)
     }
 
