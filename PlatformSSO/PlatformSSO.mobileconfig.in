@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Extensible SSO payload (com.apple.extensiblesso) for Atlas Platform SSO. Keys: https://developer.apple.com/documentation/devicemanagement/extensiblesinglesignon
+     Replace the @...@ values, then deliver it from your MDM. Platform SSO needs a user-approved MDM enrolment: a profile cannot be installed by hand. -->
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadType</key><string>com.apple.extensiblesso</string>
+      <key>PayloadIdentifier</key><string>net.atlasauth.desktop.platformsso.sso</string>
+      <key>PayloadUUID</key><string>@SSO_PAYLOAD_UUID@</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>ExtensionIdentifier</key><string>net.atlasauth.desktop.platformsso.extension</string>
+      <key>TeamIdentifier</key><string>@TEAM@</string>
+      <key>Type</key><string>Redirect</string>
+      <!-- Sign-in pages of your Atlas instance that the extension may answer with a device-bound redirect. -->
+      <key>URLs</key>
+      <array>
+        <string>https://@INSTANCE_HOST@/sign-in</string>
+      </array>
+      <key>ExtensionData</key>
+      <dict>
+        <key>instance_url</key><string>https://@INSTANCE_HOST@</string>
+        <key>publishable_key</key><string>@PUBLISHABLE_KEY@</string>
+      </dict>
+      <!-- Optional: an Atlas enrolment code (POST /v1/desktop_mfa/enrolment_codes) for silent device registration. Single use, so issue one per Mac. -->
+      <key>RegistrationToken</key><string>@ENROLMENT_CODE@</string>
+      <key>PlatformSSO</key>
+      <dict>
+        <key>AuthenticationMethod</key><string>UserSecureEnclaveKey</string>
+        <key>UseSharedDeviceKeys</key><true/>
+        <key>AccountDisplayName</key><string>Atlas</string>
+        <key>LoginFrequency</key><integer>28800</integer>
+      </dict>
+    </dict>
+  </array>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadIdentifier</key><string>net.atlasauth.desktop.platformsso</string>
+  <key>PayloadUUID</key><string>@PROFILE_UUID@</string>
+  <key>PayloadVersion</key><integer>1</integer>
+  <key>PayloadDisplayName</key><string>Atlas device sign-in</string>
+</dict>
+</plist>

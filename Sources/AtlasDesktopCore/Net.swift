@@ -5,6 +5,12 @@ public struct HTTPResponse { public var status: Int; public var data: Data
 
 public protocol HTTPClient {
     func post(_ url: URL, headers: [String: String], body: Data) async throws -> HTTPResponse
+    func get(_ url: URL, headers: [String: String]) async throws -> HTTPResponse
+}
+
+extension HTTPClient {
+    /// Only the Platform SSO client reads (the discovery document); a client that cannot GET fails closed.
+    public func get(_ url: URL, headers: [String: String]) async throws -> HTTPResponse { throw DesktopError.network("GET is not supported by this client") }
 }
 
 /// TLS only: any non-https URL is refused before a connection is made.
@@ -16,6 +22,15 @@ public struct URLSessionHTTPClient: HTTPClient {
         c.timeoutIntervalForResource = timeout * 2
         c.waitsForConnectivity = false
         session = URLSession(configuration: c)
+    }
+    public func get(_ url: URL, headers: [String: String]) async throws -> HTTPResponse {
+        guard url.scheme == "https" else { throw DesktopError.insecureURL }
+        var r = URLRequest(url: url); r.httpMethod = "GET"
+        for (k, v) in headers { r.setValue(v, forHTTPHeaderField: k) }
+        do {
+            let (d, resp) = try await session.data(for: r)
+            return HTTPResponse(status: (resp as? HTTPURLResponse)?.statusCode ?? 0, data: d)
+        } catch { throw DesktopError.network("request failed") }
     }
     public func post(_ url: URL, headers: [String: String], body: Data) async throws -> HTTPResponse {
         guard url.scheme == "https" else { throw DesktopError.insecureURL }

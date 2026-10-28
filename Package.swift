@@ -10,6 +10,8 @@ let package = Package(
         .executable(name: "atlas-enroll", targets: ["atlas-enroll"]),
         .executable(name: "atlas-pam-helper", targets: ["atlas-pam-helper"]),
         .executable(name: "atlas-passkey", targets: ["atlas-passkey"]),
+        .executable(name: "atlas-platform-sso", targets: ["atlas-platform-sso"]),
+        .executable(name: "atlas-platform-sso-host", targets: ["atlas-platform-sso-host"]),
     ],
     targets: [
         // scrypt (16 MiB, N=16384) is unusably slow unoptimised, so keep optimisation on even in debug/test builds.
@@ -18,6 +20,14 @@ let package = Package(
         .executableTarget(name: "atlas-enroll", dependencies: ["AtlasDesktopCore"]),
         .executableTarget(name: "atlas-pam-helper", dependencies: ["AtlasDesktopCore"]),
         .executableTarget(name: "atlas-passkey", dependencies: ["AtlasDesktopCore"]),
+        // Platform SSO: an app extension (entry point NSExtensionMain, set at link time) and the app that carries it.
+        .executableTarget(
+            name: "atlas-platform-sso",
+            dependencies: ["AtlasDesktopCore"],
+            swiftSettings: [.unsafeFlags(["-application-extension"])],
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
+        ),
+        .executableTarget(name: "atlas-platform-sso-host"),
         .testTarget(
             name: "AtlasDesktopCoreTests",
             dependencies: ["AtlasDesktopCore"],
