@@ -179,7 +179,8 @@ public struct PSSOClient {
         let sig = try signing.sign(SignedMessage.build(purpose: "sso_web", instanceId: config.instanceId, keyId: kid, nonce: nonce, extra: redirectURL.map { SignedMessage.sha256b64u($0) } ?? "-"))
         var body: [String: Any] = ["signing_key_id": kid, "nonce": nonce, "signature": sig]
         if let r = redirectURL { body["redirect_url"] = r }
-        guard let w = try? JSONDecoder().decode(PSSOWebSession.self, from: try await postJSON("web_session", body)) else { throw DesktopError.malformed("web session") }
+        let data = try await postJSON("web_session", body)
+        guard let w = try? JSONDecoder().decode(PSSOWebSession.self, from: data) else { throw DesktopError.malformed("web session") }
         return w
     }
 }
