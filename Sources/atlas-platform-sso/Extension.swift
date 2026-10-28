@@ -15,6 +15,7 @@ import AtlasDesktopCore
 /// Delivered by MDM as an Extensible SSO payload (Type Redirect) with ExtensionData `instance_url` and `publishable_key`; the
 /// payload's RegistrationToken is an Atlas enrolment code for silent registration. Without one, the person types a code.
 @objc(AtlasPlatformSSOExtension)
+@available(macOS 14.0, *)
 final class AtlasPlatformSSOExtension: NSViewController, ASAuthorizationProviderExtensionAuthorizationRequestHandler, ASAuthorizationProviderExtensionRegistrationHandler {
     static let agentVersion = "1.0.0"
 
